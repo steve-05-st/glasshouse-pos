@@ -196,6 +196,7 @@ main { flex: 1; min-height: 0; position: relative; }
 .cart-head .no { font-size: 20px; font-weight: 700; }
 .cart-head .clock { font-size: 13px; color: var(--muted); }
 .cart-close { display: none; }
+.addmore { display: none; }
 .imp-prev { display: flex; flex-direction: column; }
 .imp-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .imp-row b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -379,6 +380,7 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
   .cart { position: fixed; inset: 0; z-index: 40; transform: translateY(100%); transition: transform 0.2s ease-out; border-left: 0; }
   .cart.open { transform: none; }
   .cart-close { display: inline-grid; }
+  .addmore { display: block; width: 100%; margin-top: 10px; min-height: 44px; font-weight: 700; color: var(--accent); border-color: var(--accent); }
   .cart-bar { display: flex; position: absolute; left: 12px; right: 12px; bottom: 10px; z-index: 10; min-height: 56px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px; border: 0; border-radius: 14px; background: var(--accent); color: var(--accent-ink); font-weight: 700; box-shadow: var(--shadow); }
   .cart-bar .b { font-size: 17px; }
   .two { grid-template-columns: 1fr; }
@@ -2073,6 +2075,7 @@ function shell() {
           <div class="seg" id="typeSeg" role="group" aria-label="Order type"></div>
           <div class="boxrow" id="boxRow" hidden></div>
           <input class="in" id="cartTable" placeholder="Table no. or customer name (optional)" data-in="cartTable" maxlength="60" aria-label="Table or customer name">
+          <button type="button" class="btn addmore" data-act="closeCart">+ Add more items</button>
         </div>
         <div class="lines" id="lines"></div>
         <div class="cart-foot">
@@ -2388,8 +2391,9 @@ function renderCart() {
   lines.scrollTop = keep;
   renderDisc();
   renderTotals();
-  $('#cartBar').hidden = !n;
-  $('#cartBarL').textContent = 'View order · ' + n + (n === 1 ? ' item' : ' items');
+  $('#cartBar').hidden = !n && !c.editId;
+  const eo = c.editId ? st.orders.get(c.editId) : null;
+  $('#cartBarL').textContent = (eo ? 'Editing #' + pad(eo.no, 3) + ' · ' : 'View order · ') + n + (n === 1 ? ' item' : ' items');
   $('#cartBarR').textContent = ks(totals().total);
 }
 function renderDisc() {
@@ -2429,7 +2433,7 @@ function renderTotals() {
   $('#totals').innerHTML = h;
   const cb = $('#chargeBtn');
   const ed = !!c.editId;
-  cb.textContent = c.items.length ? (ed ? 'Save changes · ' : 'Place order · ') + fmtNum(t.total) + ' Ks' : ed ? 'Save changes' : 'Place order';
+  cb.textContent = c.items.length ? (ed ? 'Save · ' : 'Place order · ') + fmtNum(t.total) + ' Ks' : ed ? 'Save changes' : 'Place order';
   $('#clearBtn').textContent = ed ? 'Cancel edit' : 'Clear';
   cb.disabled = !c.items.length;
   $('#clearBtn').disabled = !ed && !c.items.length && !c.table && !c.note;
