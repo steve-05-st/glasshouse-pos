@@ -411,6 +411,12 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
 .lockbtn{gap:6px}
 @media (max-width:560px){.lockbtn .t{display:none}}
 
+.tag.warn{background:#fff1cc;color:#7a4b00;border-radius:6px;padding:1px 7px;font-weight:700}
+@media (prefers-color-scheme:dark){.tag.warn{background:#4a3a10;color:#ffd978}}
+.tab{position:relative}
+.ubadge{min-width:18px;height:18px;padding:0 5px;margin-left:4px;border-radius:9px;background:#d9830f;color:#fff;font-size:11px;line-height:18px;text-align:center;font-weight:700}
+.ubadge[hidden]{display:none}
+
 </style>
 </head>
 <body>
@@ -597,17 +603,8 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
 
   function go() {
     window.POS_AUTH = { role: info.role };
-    // A different person type signing in on the same device must not see the other one's saved copy.
-    var prev = ls(function () { return localStorage.getItem('pos_role'); });
-    var done = function () {
-      ls(function () { localStorage.setItem('pos_role', info.role); });
-      window.__posGo = true;
-      if (window.__posStart) window.__posStart();
-    };
-    if (prev && prev !== info.role) {
-      var req = indexedDB.deleteDatabase('cafepos');
-      req.onsuccess = req.onerror = req.onblocked = done;
-    } else done();
+    window.__posGo = true;
+    if (window.__posStart) window.__posStart();
   }
 
   function showGate() {
@@ -927,7 +924,7 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
         { v: o.total || 0, s: S.NUM },
         o.tend === null || o.tend === undefined ? null : { v: o.tend, s: S.NUM },
         o.change === null || o.change === undefined ? null : { v: o.change, s: S.NUM },
-        o.st === 'void' ? 'Voided' : 'Paid',
+        o.st === 'void' ? 'Voided' : o.st === 'open' ? 'Unpaid' : 'Paid',
         o.vr || '',
         o.note || '',
       ]);
@@ -949,7 +946,7 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
           { v: i.price, s: S.NUM },
           { f: `F${r}*G${r}`, v: i.qty * i.price, s: S.NUM },
           i.note || '',
-          o.st === 'void' ? 'Voided' : 'Paid',
+          o.st === 'void' ? 'Voided' : o.st === 'open' ? 'Unpaid' : 'Paid',
         ]);
       });
     });
@@ -961,6 +958,7 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
       const s = daySerial(o.day);
       let d = days.get(s);
       if (!d) days.set(s, (d = { s, orders: 0, items: 0, rev: 0, voided: 0, pay: {} }));
+      if (o.st === 'open') return;
       if (o.st === 'void') {
         d.voided += 1;
         return;
@@ -973,7 +971,7 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
     const dayList = Array.from(days.values()).sort((a, b) => a.s - b.s);
     const pays = (opts.pays || []).slice();
     list.forEach((o) => {
-      if (o.st !== 'void' && o.pay && pays.indexOf(o.pay) < 0) pays.push(o.pay);
+      if (o.st === 'paid' && o.pay && pays.indexOf(o.pay) < 0) pays.push(o.pay);
     });
 
     const OR = (c) => `Orders!$${c}$2:$${c}$${n + 1}`;
@@ -1024,7 +1022,7 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
     /* ---- Item Sales ---- */
     const itemMap = new Map();
     list.forEach((o) => {
-      if (o.st === 'void') return;
+      if (o.st === 'void' || o.st === 'open') return;
       (o.items || []).forEach((i) => {
         const cat = i.cat || 'Uncategorized';
         const k = i.name + '\u0001' + cat;
@@ -1175,7 +1173,7 @@ const debounce = (fn, ms) => {
 };
 const lsGet = (k) => {
   try {
-    const v = localStorage.getItem('cafepos:' + k);
+    const v = localStorage.getItem((st.role === 'staff' ? 'cafepos-s:' : 'cafepos:') + k);
     return v == null ? undefined : JSON.parse(v);
   } catch (e) {
     return undefined;
@@ -1183,7 +1181,7 @@ const lsGet = (k) => {
 };
 const lsSet = (k, v) => {
   try {
-    localStorage.setItem('cafepos:' + k, JSON.stringify(v));
+    localStorage.setItem((st.role === 'staff' ? 'cafepos-s:' : 'cafepos:') + k, JSON.stringify(v));
   } catch (e) {
     /* storage may be unavailable */
   }
@@ -1268,7 +1266,7 @@ function cleanOrder(r, id) {
     tend: r.tend == null ? null : Math.round(num(r.tend)),
     change: r.change == null ? null : Math.round(num(r.change)),
     note: str(r.note, 300),
-    st: r.st === 'void' ? 'void' : r.st === 'gone' ? 'gone' : 'paid',
+    st: r.st === 'void' ? 'void' : r.st === 'gone' ? 'gone' : r.st === 'open' ? 'open' : 'paid',
     vr: str(r.vr, 200),
     vts: num(r.vts),
     rev: Math.max(1, Math.round(num(r.rev, 1))),
@@ -1339,15 +1337,18 @@ const Local = {
     try {
       if (typeof indexedDB === 'undefined') throw new Error('no idb');
       this.db = await new Promise((res, rej) => {
-        const r = indexedDB.open('cafepos', 1);
+        const r = indexedDB.open(st.role === 'staff' ? 'cafepos-staff' : 'cafepos', 1);
         r.onupgradeneeded = () => {
           const d = r.result;
           if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
           if (!d.objectStoreNames.contains('orders')) d.createObjectStore('orders', { keyPath: 'id' });
         };
-        r.onsuccess = () => res(r.result);
         r.onerror = () => rej(r.error);
         r.onblocked = () => rej(new Error('blocked'));
+        r.onsuccess = () => {
+          r.result.onversionchange = () => r.result.close();
+          res(r.result);
+        };
       });
       this.ok = true;
       try {
@@ -1765,7 +1766,7 @@ function nextNo(day) {
   const arr = st.byDay.get(day || dayKey()) || [];
   return arr.reduce((m, o) => Math.max(m, o.no), 0) + 1;
 }
-function completeOrder(pay, tend) {
+function completeOrder(pay, tend, open) {
   const ts = Date.now();
   const day = dayKey(ts);
   const t = totals();
@@ -1776,7 +1777,7 @@ function completeOrder(pay, tend) {
   const mkId = () => day.replace(/-/g, '') + '-' + pad(no, 3) + '-' + Math.random().toString(36).slice(2, 6).padEnd(4, '0');
   let id = mkId();
   while (st.orders.has(id)) id = mkId();
-  const cash = pay === 'Cash';
+  const cash = !open && pay === 'Cash';
   const order = {
     id,
     no,
@@ -1797,7 +1798,7 @@ function completeOrder(pay, tend) {
     tend: cash ? tend : null,
     change: cash ? tend - t.total : null,
     note: c.note.trim(),
-    st: 'paid',
+    st: open ? 'open' : 'paid',
     vr: '',
     vts: 0,
     rev: 1,
@@ -1807,8 +1808,10 @@ function completeOrder(pay, tend) {
   };
   putOrder(order);
   Local.putOrders([order]);
-  st.meta.lastPay = pay;
-  Local.kvSet('meta', st.meta);
+  if (!open) {
+    st.meta.lastPay = pay;
+    Local.kvSet('meta', st.meta);
+  }
   st.cart = newCart();
   st.ui.noteFor = null;
   st.ui.discOpen = false;
@@ -1828,6 +1831,26 @@ function voidOrder(id, reason) {
   st.dirty.add(o.id);
   Local.putOrders([o]);
   Remote.flush();
+}
+/* Takes payment for an order that was placed earlier (status open -> paid). */
+function payOrder(id, pay, tend) {
+  const o = st.orders.get(id);
+  if (!o || o.st !== 'open') return null;
+  const cash = pay === 'Cash';
+  o.pay = pay;
+  o.tend = cash ? tend : null;
+  o.change = cash ? tend - o.total : null;
+  o.st = 'paid';
+  o.rev = (o.rev || 1) + 1;
+  o.upd = Date.now();
+  o._dirty = true;
+  st.dirty.add(o.id);
+  Local.putOrders([o]);
+  st.meta.lastPay = pay;
+  Local.kvSet('meta', st.meta);
+  Remote.flush();
+  scheduleRender();
+  return o;
 }
 /* Delete = a hidden "gone" marker that syncs to every device, so a deleted order cannot come back from another phone. */
 function deleteOrder(id) {
@@ -1853,8 +1876,13 @@ function ordersIn(from, to) {
   return out.sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1));
 }
 function summarize(list) {
-  const r = { orders: 0, items: 0, revenue: 0, voided: 0, byPay: new Map(), byCat: new Map(), byItem: new Map(), byHour: Array.from({ length: 24 }, () => ({ n: 0, rev: 0 })), byDay: new Map() };
+  const r = { orders: 0, items: 0, revenue: 0, voided: 0, byPay: new Map(), byCat: new Map(), byItem: new Map(), byHour: Array.from({ length: 24 }, () => ({ n: 0, rev: 0 })), byDay: new Map(), unpaid: 0, unpaidAmt: 0 };
   list.forEach((o) => {
+    if (o.st === 'open') {
+      r.unpaid += 1;
+      r.unpaidAmt += o.total;
+      return;
+    }
     if (o.st === 'void') {
       r.voided += 1;
       return;
@@ -1976,7 +2004,7 @@ function shell() {
   $('#app').innerHTML = `
   <header class="top">
     <div class="brand"><span class="logo">${ico('cup')}</span><span class="name" id="cafeName"></span></div>
-    <nav class="tabs" id="tabs" aria-label="Main">${tabs.map((t) => `<button class="tab" data-act="go" data-view="${t[0]}">${ico(t[2])}<span>${t[1]}</span></button>`).join('')}</nav>
+    <nav class="tabs" id="tabs" aria-label="Main">${tabs.map((t) => `<button class="tab" data-act="go" data-view="${t[0]}">${ico(t[2])}<span>${t[1]}</span>${t[0] === 'orders' ? '<b class="ubadge" id="unpaidBadge" hidden></b>' : ''}</button>`).join('')}</nav>
     <div class="top-right">
       <button class="sync" id="syncChip" data-act="go" data-view="settings"><i class="dot"></i><span id="syncTxt"></span></button>
       <div class="today" id="todayStat" aria-live="polite"></div>
@@ -2012,7 +2040,7 @@ function shell() {
             <button class="btn sm" data-act="discClear">Remove</button>
           </div>
           <div id="totals"></div>
-          <div class="foot-actions"><button class="btn" data-act="clearCart" id="clearBtn">Clear</button><button class="btn primary big" data-act="charge" id="chargeBtn">Charge</button></div>
+          <div class="foot-actions"><button class="btn" data-act="clearCart" id="clearBtn">Clear</button><button class="btn primary big" data-act="charge" id="chargeBtn">Place order</button></div>
         </div>
       </aside>
       <button class="cart-bar" id="cartBar" data-act="openCart" hidden><span id="cartBarL"></span><span class="b" id="cartBarR"></span></button>
@@ -2082,6 +2110,16 @@ function renderTop() {
   b.hidden = !n || st.role !== 'owner';
   b.textContent = n > 99 ? '99+' : n;
   b.parentElement.title = n ? n + ' orders not yet exported to Excel' : 'Export to Excel';
+  let openN = 0;
+  st.orders.forEach((o) => {
+    if (o.st === 'open') openN += 1;
+  });
+  const ub = $('#unpaidBadge');
+  if (ub) {
+    ub.hidden = !openN;
+    ub.textContent = openN > 99 ? '99+' : openN;
+    ub.title = openN + ' unpaid';
+  }
   $$('.tab').forEach((x) => x.classList.toggle('on', x.dataset.view === st.ui.view));
 }
 function renderSync() {
@@ -2322,7 +2360,7 @@ function renderTotals() {
   h += `<div class="sum total"><span>Total</span><span>${fmtNum(t.total)} Ks</span></div>`;
   $('#totals').innerHTML = h;
   const cb = $('#chargeBtn');
-  cb.textContent = c.items.length ? 'Charge ' + fmtNum(t.total) + ' Ks' : 'Charge';
+  cb.textContent = c.items.length ? 'Place order · ' + fmtNum(t.total) + ' Ks' : 'Place order';
   cb.disabled = !c.items.length;
   $('#clearBtn').disabled = !c.items.length && !c.table && !c.note;
   $('#cartBarR').textContent = ks(t.total);
@@ -2358,12 +2396,13 @@ function quickAmounts(total) {
   });
   return out.slice(0, 5);
 }
-function openPay() {
-  if (!st.cart.items.length) return;
-  const t = totals();
+function openPay(orderId) {
+  const ord = orderId ? st.orders.get(orderId) : null;
+  if (orderId ? !ord || ord.st !== 'open' : !st.cart.items.length) return;
+  const t = ord ? { total: ord.total } : totals();
   const pays = st.settings.pays.length ? st.settings.pays : ['Cash'];
   // Always start on the first method (Cash): a remembered mobile-pay choice is easy to miss and would record a cash sale as KBZPay.
-  PAY = { method: pays[0], tend: '', total: t.total, pays, modal: null };
+  PAY = { method: pays[0], tend: '', total: t.total, pays, modal: null, orderId: orderId || '' };
   PAY.modal = openModal('', { label: 'Payment', onClose: () => (PAY = null) });
   drawPay();
 }
@@ -2402,11 +2441,29 @@ function payKey(k) {
   PAY.tend = t;
   drawPay();
 }
+function placeOrder() {
+  if (!st.cart.items.length) return;
+  const order = completeOrder('', null, true);
+  closeCart();
+  afterCart();
+  renderTop();
+  toast('Order #' + pad(order.no, 3) + ' placed · ' + ks(order.total) + '. Take payment in Orders.');
+}
 function payDone() {
-  if (!PAY || !st.cart.items.length) return;
+  if (!PAY) return;
   const cash = PAY.method === 'Cash';
   const tend = +PAY.tend || 0;
   if (cash && tend < PAY.total) return;
+  if (PAY.orderId) {
+    const mm = PAY.modal;
+    const paid = payOrder(PAY.orderId, PAY.method, cash ? tend : null);
+    PAY = null;
+    mm.close(true);
+    renderTop();
+    if (paid) showReceipt(paid, true);
+    return;
+  }
+  if (!st.cart.items.length) return;
   const m = PAY.modal;
   const order = completeOrder(PAY.method, cash ? tend : null);
   PAY = null;
@@ -2431,7 +2488,7 @@ function receiptHtml(o) {
     ${o.disc ? `<div class="r-sum"><span>Discount${o.discLabel ? ' (' + esc(o.discLabel) + ')' : ''}</span><span>−${fmtNum(o.disc)}</span></div>` : ''}
     ${o.tax ? `<div class="r-sum"><span>${esc(o.taxLabel || 'Tax')} ${o.taxPct}%</span><span>${fmtNum(o.tax)}</span></div>` : ''}
     <div class="r-sum total"><span>TOTAL (Ks)</span><span>${fmtNum(o.total)}</span></div>
-    <div class="r-sum"><span>Paid by</span><span>${esc(o.pay)}</span></div>
+    ${o.st === 'open' ? '<div class="r-sum"><span>Status</span><span>UNPAID</span></div>' : `<div class="r-sum"><span>Paid by</span><span>${esc(o.pay)}</span></div>`}
     ${o.tend != null ? `<div class="r-sum"><span>Cash received</span><span>${fmtNum(o.tend)}</span></div><div class="r-sum"><span>Change</span><span>${fmtNum(o.change)}</span></div>` : ''}
     ${o.note ? `<div class="r-note">Note: ${esc(o.note)}</div>` : ''}
     ${o.st === 'void' ? `<div class="r-void">VOIDED${o.vr ? ' · ' + esc(o.vr) : ''}</div>` : ''}
@@ -2449,7 +2506,7 @@ function receiptText(o) {
   L.push('--------------------');
   if (o.disc) L.push('Discount: -' + fmtNum(o.disc));
   if (o.tax) L.push((o.taxLabel || 'Tax') + ' ' + o.taxPct + '%: ' + fmtNum(o.tax));
-  L.push('TOTAL: ' + ks(o.total) + ' (' + o.pay + ')');
+  L.push('TOTAL: ' + ks(o.total) + (o.st === 'open' ? ' (UNPAID)' : ' (' + o.pay + ')'));
   if (o.tend != null) L.push('Cash ' + fmtNum(o.tend) + ' · Change ' + fmtNum(o.change));
   if (s.footer) L.push(s.footer);
   return L.join('\n');
@@ -2465,8 +2522,9 @@ function showReceipt(o, fresh) {
     <div class="sheet-f">
       <button class="btn" data-act="copyReceipt" data-id="${esc(o.id)}">Copy text</button>
       ${canPrint() ? `<button class="btn" data-act="printReceipt" data-id="${esc(o.id)}">Print</button>` : ''}
+      ${!fresh && o.st !== 'void' ? `<button class="btn danger" data-act="voidAsk" data-id="${esc(o.id)}">${o.st === 'open' ? 'Cancel order' : 'Void'}</button>` : ''}
       ${!fresh && st.role === 'owner' ? `<button class="btn danger" data-act="deleteAsk" data-id="${esc(o.id)}">Delete order</button>` : ''}
-      <button class="btn primary" data-act="modalClose" ${fresh ? 'autofocus' : ''}>${fresh ? 'New order' : 'Close'}</button>
+      ${!fresh && o.st === 'open' ? `<button class="btn primary big" data-act="payOrder" data-id="${esc(o.id)}">Take payment · ${fmtNum(o.total)} Ks</button>` : `<button class="btn primary" data-act="modalClose" ${fresh ? 'autofocus' : ''}>${fresh ? 'New order' : 'Close'}</button>`}
     </div>`,
     { label: 'Receipt' }
   );
@@ -2708,19 +2766,22 @@ function orderRow(o) {
   return `<button class="orow${o.st === 'void' ? ' void' : ''}" data-act="openOrder" data-id="${esc(o.id)}">
     <span class="on">#${pad(o.no, 3)}</span>
     <span class="ot">${fmtTod(o.tod)}</span>
-    <span class="od"><b>${esc(items)}</b><small data-t="${fmtTod(o.tod)}">${o.type === 'take' ? 'Takeaway' : 'Dine-in'}${o.table ? ' · ' + esc(o.table) : ''} · ${esc(o.pay)}${o.st === 'void' ? ' · <span class="tag bad">Voided</span>' : ''}</small></span>
+    <span class="od"><b>${esc(items)}</b><small data-t="${fmtTod(o.tod)}">${o.type === 'take' ? 'Takeaway' : 'Dine-in'}${o.table ? ' · ' + esc(o.table) : ''} · ${o.st === 'open' ? '<span class="tag warn">Unpaid</span>' : esc(o.pay)}${o.st === 'void' ? ' · <span class="tag bad">Voided</span>' : ''}</small></span>
     <span class="ok">${fmtNum(o.total)} Ks</span></button>`;
 }
 function renderOrders() {
   const k = st.ui.ordersDay;
-  const arr = (st.byDay.get(k) || []).slice().reverse();
-  const s = summarize(arr);
+  const all = (st.byDay.get(k) || []).slice().reverse();
+  const s = summarize(all);
+  const only = st.ui.ordFilter === 'open';
+  const arr = only ? all.filter((o) => o.st === 'open') : all;
   $('#p-orders').innerHTML = `
     <div class="page-head"><h2>Orders</h2>
       <div class="daynav"><button class="icon-btn" data-act="dayPrev" aria-label="Previous day">${ico('left')}</button><input class="in" type="date" id="ordersDate" data-ch="ordersDate" value="${k}" aria-label="Day"><button class="icon-btn" data-act="dayNext" aria-label="Next day">${ico('right')}</button>${k !== dayKey() ? '<button class="btn sm" data-act="dayToday">Today</button>' : ''}</div></div>
     <div class="muted">${esc(fmtDay(k, true))}</div>
-    <div class="kpis">${kpi('Orders', s.orders)}${kpi('Items sold', s.items)}${kpi('Revenue', kv(s.revenue))}${s.voided ? kpi('Voided', s.voided, 'not counted') : ''}</div>
-    <div class="olist">${arr.length ? arr.map(orderRow).join('') : '<div class="empty">No orders on this day.</div>'}</div>`;
+    <div class="kpis">${kpi('Orders', s.orders)}${kpi('Items sold', s.items)}${kpi('Revenue', kv(s.revenue))}${s.unpaid ? kpi('Unpaid', s.unpaid, ks(s.unpaidAmt)) : ''}${s.voided ? kpi('Voided', s.voided, 'not counted') : ''}</div>
+    <div class="chips" role="group" aria-label="Show"><button class="chip${only ? '' : ' on'}" data-act="ordFilter" data-v="all">All orders</button><button class="chip${only ? ' on' : ''}" data-act="ordFilter" data-v="open">Unpaid${s.unpaid ? ' (' + s.unpaid + ')' : ''}</button></div>
+    <div class="olist">${arr.length ? arr.map(orderRow).join('') : '<div class="empty">' + (only ? 'No unpaid orders on this day.' : 'No orders on this day.') + '</div>'}</div>`;
 }
 
 /* ---------- charts (plain HTML, hover + keyboard tooltips, table twin) ---------- */
@@ -3343,7 +3404,7 @@ const ACT = {
     saveCart();
   },
   charge: () => {
-    if (!PAY) openPay();
+    placeOrder();
   },
   payMethod: (t) => {
     if (PAY) {
@@ -3377,6 +3438,15 @@ const ACT = {
   printReceipt: (t) => {
     const o = st.orders.get(t.dataset.id);
     if (o) printReceipt(o);
+  },
+  ordFilter: (t) => {
+    st.ui.ordFilter = t.dataset.v === 'open' ? 'open' : 'all';
+    renderOrders();
+  },
+  payOrder: (t) => {
+    const id = t.dataset.id;
+    closeTop();
+    if (!PAY) openPay(id);
   },
   deleteAsk: async (t) => {
     const o = st.orders.get(t.dataset.id);
