@@ -1268,7 +1268,7 @@ function cleanOrder(r, id) {
     tend: r.tend == null ? null : Math.round(num(r.tend)),
     change: r.change == null ? null : Math.round(num(r.change)),
     note: str(r.note, 300),
-    st: r.st === 'void' ? 'void' : 'paid',
+    st: r.st === 'void' ? 'void' : r.st === 'gone' ? 'gone' : 'paid',
     vr: str(r.vr, 200),
     vts: num(r.vts),
     rev: Math.max(1, Math.round(num(r.rev, 1))),
@@ -1295,6 +1295,17 @@ function putOrder(o) {
     }
   }
   st.orders.set(o.id, o);
+  if (o.st === 'gone') {
+    const g = st.byDay.get(o.day);
+    if (g) {
+      const gi = g.findIndex((x) => x.id === o.id);
+      if (gi >= 0) g.splice(gi, 1);
+      if (!g.length) st.byDay.delete(o.day);
+    }
+    if (o._dirty) st.dirty.add(o.id);
+    else st.dirty.delete(o.id);
+    return;
+  }
   let arr = st.byDay.get(o.day);
   if (!arr) st.byDay.set(o.day, (arr = []));
   const i = arr.findIndex((x) => x.id === o.id);
@@ -1818,6 +1829,18 @@ function voidOrder(id, reason) {
   Local.putOrders([o]);
   Remote.flush();
 }
+/* Delete = a hidden "gone" marker that syncs to every device, so a deleted order cannot come back from another phone. */
+function deleteOrder(id) {
+  const o = st.orders.get(id);
+  if (!o || o.st === 'gone') return;
+  o.st = 'gone';
+  o.rev = (o.rev || 1) + 1;
+  o.upd = Date.now();
+  o._dirty = true;
+  putOrder(o);
+  Local.putOrders([o]);
+  Remote.flush();
+}
 // Written straight away on every change (a tiny record): a reload or a killed tab can never lose the order being rung up.
 const saveCart = () => Local.kvSet('cart', st.cart);
 
@@ -1903,7 +1926,7 @@ function rangeOf(p) {
 function unexportedCount() {
   let n = 0;
   st.orders.forEach((o) => {
-    if (Math.max(o.ts, o.upd || 0) > st.meta.lastExport) n += 1;
+    if (o.st !== 'gone' && Math.max(o.ts, o.upd || 0) > st.meta.lastExport) n += 1;
   });
   return n;
 }
@@ -2442,7 +2465,7 @@ function showReceipt(o, fresh) {
     <div class="sheet-f">
       <button class="btn" data-act="copyReceipt" data-id="${esc(o.id)}">Copy text</button>
       ${canPrint() ? `<button class="btn" data-act="printReceipt" data-id="${esc(o.id)}">Print</button>` : ''}
-      ${!fresh && o.st !== 'void' && st.role === 'owner' ? `<button class="btn danger" data-act="voidAsk" data-id="${esc(o.id)}">Void order</button>` : ''}
+      ${!fresh && st.role === 'owner' ? `<button class="btn danger" data-act="deleteAsk" data-id="${esc(o.id)}">Delete order</button>` : ''}
       <button class="btn primary" data-act="modalClose" ${fresh ? 'autofocus' : ''}>${fresh ? 'New order' : 'Close'}</button>
     </div>`,
     { label: 'Receipt' }
@@ -3354,6 +3377,17 @@ const ACT = {
   printReceipt: (t) => {
     const o = st.orders.get(t.dataset.id);
     if (o) printReceipt(o);
+  },
+  deleteAsk: async (t) => {
+    const o = st.orders.get(t.dataset.id);
+    if (!o || st.role !== 'owner') return;
+    closeTop();
+    const ok = await confirmBox({ title: 'Delete order #' + pad(o.no, 3) + '?', body: esc(fmtDay(o.day)) + ' · ' + esc(fmtTod(o.tod)) + ' · ' + ks(o.total) + '.<br>It is removed from Orders, reports and Excel on every device. This cannot be undone.', ok: 'Delete order', cancel: 'Keep order', danger: true });
+    if (!ok) return;
+    deleteOrder(o.id);
+    scheduleRender();
+    renderTop();
+    toast('Order deleted');
   },
   voidAsk: (t) => {
     closeTop();
