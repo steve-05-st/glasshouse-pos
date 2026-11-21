@@ -1210,7 +1210,7 @@ const SAMPLE = [
   ['Snacks', 'Chicken Sandwich', 4500], ['Snacks', 'French Fries', 3000],
 ];
 const sampleMenu = () => SAMPLE.map((r, i) => ({ id: 's' + (i + 1), cat: r[0], name: r[1], price: r[2], out: false }));
-const newCart = () => ({ items: [], type: 'dine', boxes: 1, table: '', note: '', disc: { mode: 'amt', val: 0 } });
+const newCart = () => ({ items: [], type: 'dine', boxes: 1, editId: '', table: '', note: '', disc: { mode: 'amt', val: 0 } });
 
 /* ---------- state ---------- */
 const st = {
@@ -1823,6 +1823,8 @@ function completeOrder(pay, tend, open) {
     _dirty: true,
     _doc: '',
   };
+  const ex = c.editId ? st.orders.get(c.editId) : null;
+  if (ex && ex.st === 'open' && open) Object.assign(order, { id: ex.id, no: ex.no, day: ex.day, ts: ex.ts, tod: ex.tod, rev: (ex.rev || 1) + 1, _doc: ex._doc || '' });
   putOrder(order);
   Local.putOrders([order]);
   if (!open) {
@@ -1848,6 +1850,29 @@ function voidOrder(id, reason) {
   st.dirty.add(o.id);
   Local.putOrders([o]);
   Remote.flush();
+}
+/* Loads an unpaid order back into the cart so items can be added or removed. */
+function editOrder(id) {
+  const o = st.orders.get(id);
+  if (!o || o.st !== 'open') return false;
+  if (st.cart.items.length && st.cart.editId !== id) return false;
+  const box = o.items.find(isBox);
+  const m = /^(\d+(?:\.\d+)?)%$/.exec(o.discLabel || '');
+  st.cart = newCart();
+  st.cart.editId = id;
+  st.cart.items = o.items.filter((i) => !isBox(i)).map((i, k) => {
+    const mi = st.menu.find((x) => x.name === i.name);
+    return { id: mi ? mi.id : 'x' + k, name: i.name, cat: i.cat, price: i.price, qty: i.qty, note: i.note || '' };
+  });
+  st.cart.type = o.type;
+  st.cart.boxes = box ? box.qty : 0;
+  st.cart.table = o.table || '';
+  st.cart.note = o.note || '';
+  st.cart.disc = o.disc ? (m ? { mode: 'pct', val: +m[1] } : { mode: 'amt', val: o.disc }) : { mode: 'amt', val: 0 };
+  st.ui.discOpen = !!o.disc;
+  saveCart();
+  scheduleRender();
+  return true;
 }
 /* Takes payment for an order that was placed earlier (status open -> paid). */
 function payOrder(id, pay, tend) {
@@ -2091,7 +2116,7 @@ function renderAll() {
       renderChips();
       renderTiles();
     }
-    $('#cartNo').textContent = '#' + pad(nextNo(), 3);
+    $('#cartNo').textContent = cartNoText();
     renderTotals();
     return;
   }
@@ -2339,10 +2364,18 @@ function lineHtml(i) {
     <div class="line-total">${fmtNum(i.price * i.qty)}</div>
     ${editing ? `<div class="line-edit"><input class="in sm" data-in="lineNote" data-id="${esc(i.id)}" value="${esc(i.note)}" placeholder="e.g. less sugar, no ice" maxlength="120" aria-label="Note for ${esc(i.name)}" autofocus><button class="btn sm" data-act="lineNote" data-id="${esc(i.id)}">Done</button></div>` : ''}  </div>`;
 }
+function cartNoText() {
+  const eo = st.cart.editId ? st.orders.get(st.cart.editId) : null;
+  return eo ? '#' + pad(eo.no, 3) + ' · editing' : '#' + pad(nextNo(), 3);
+}
 function renderCart() {
   const c = st.cart;
   const n = c.items.reduce((a, i) => a + i.qty, 0);
-  $('#cartNo').textContent = '#' + pad(nextNo(), 3);
+  if (st.cart.editId) {
+    const eo = st.orders.get(st.cart.editId);
+    if (!eo || eo.st !== 'open') st.cart.editId = '';
+  }
+  $('#cartNo').textContent = cartNoText();
   $('#cartClock').textContent = fmtDay(dayKey()) + ' · ' + fmtTod(todOfTs(Date.now()));
   $('#typeSeg').innerHTML = [['dine', 'Dine-in'], ['take', 'Takeaway']].map((x) => `<button type="button" class="${c.type === x[0] ? 'on' : ''}" data-act="type" data-v="${x[0]}">${x[1]}</button>`).join('');
   const tb = $('#cartTable');
@@ -2370,6 +2403,11 @@ function renderBox() {
   const el = $('#boxRow');
   if (!el) return;
   const fee = st.settings.boxFee || 0;
+  if (st.cart.type === 'take' && !fee && st.role === 'owner') {
+    el.hidden = false;
+    el.innerHTML = `<span class="bl">Takeaway box <small>No price set yet</small></span><button type="button" class="btn sm" data-act="go" data-view="settings">Set price</button>`;
+    return;
+  }
   const on = st.cart.type === 'take' && fee > 0;
   el.hidden = !on;
   if (!on) return;
@@ -2390,9 +2428,11 @@ function renderTotals() {
   h += `<div class="sum total"><span>Total</span><span>${fmtNum(t.total)} Ks</span></div>`;
   $('#totals').innerHTML = h;
   const cb = $('#chargeBtn');
-  cb.textContent = c.items.length ? 'Place order · ' + fmtNum(t.total) + ' Ks' : 'Place order';
+  const ed = !!c.editId;
+  cb.textContent = c.items.length ? (ed ? 'Save changes · ' : 'Place order · ') + fmtNum(t.total) + ' Ks' : ed ? 'Save changes' : 'Place order';
+  $('#clearBtn').textContent = ed ? 'Cancel edit' : 'Clear';
   cb.disabled = !c.items.length;
-  $('#clearBtn').disabled = !c.items.length && !c.table && !c.note;
+  $('#clearBtn').disabled = !ed && !c.items.length && !c.table && !c.note;
   $('#cartBarR').textContent = ks(t.total);
 }
 function afterCart(scrollEnd) {
@@ -2473,11 +2513,13 @@ function payKey(k) {
 }
 function placeOrder() {
   if (!st.cart.items.length) return;
+  const editing = !!st.cart.editId;
   const order = completeOrder('', null, true);
   closeCart();
   afterCart();
   renderTop();
-  toast('Order #' + pad(order.no, 3) + ' placed · ' + ks(order.total) + '. Take payment in Orders.');
+  toast('Order #' + pad(order.no, 3) + (editing ? ' updated' : ' placed') + ' · ' + ks(order.total) + '. Take payment in Orders.');
+  if (editing) go('orders');
 }
 function payDone() {
   if (!PAY) return;
@@ -2550,7 +2592,7 @@ function showReceipt(o, fresh) {
       ${receiptHtml(o)}
     </div>
     <div class="sheet-f">
-      <button class="btn" data-act="copyReceipt" data-id="${esc(o.id)}">Copy text</button>
+      ${!fresh && o.st === 'open' ? `<button class="btn" data-act="editOrder" data-id="${esc(o.id)}">Edit</button>` : `<button class="btn" data-act="copyReceipt" data-id="${esc(o.id)}">Copy text</button>`}
       ${canPrint() ? `<button class="btn" data-act="printReceipt" data-id="${esc(o.id)}">Print</button>` : ''}
       ${!fresh && o.st !== 'void' ? `<button class="btn danger" data-act="voidAsk" data-id="${esc(o.id)}">${o.st === 'open' ? 'Cancel order' : 'Void'}</button>` : ''}
       ${!fresh && st.role === 'owner' ? `<button class="btn danger" data-act="deleteAsk" data-id="${esc(o.id)}">Delete order</button>` : ''}
@@ -3419,8 +3461,10 @@ const ACT = {
   openCart,
   closeCart,
   clearCart: async () => {
-    if (!st.cart.items.length) {
+    if (st.cart.editId || !st.cart.items.length) {
       st.cart = newCart();
+      st.ui.discOpen = false;
+      saveCart();
       return afterCart();
     }
     const ok = await confirmBox({ title: 'Clear this order?', body: 'All items on the current order will be removed.', ok: 'Clear order', danger: true });
@@ -3484,6 +3528,12 @@ const ACT = {
   printReceipt: (t) => {
     const o = st.orders.get(t.dataset.id);
     if (o) printReceipt(o);
+  },
+  editOrder: (t) => {
+    closeTop();
+    if (!editOrder(t.dataset.id)) return toast('Finish or clear the order on the Sell screen first', 'bad');
+    go('sell');
+    openCart();
   },
   ordFilter: (t) => {
     st.ui.ordFilter = t.dataset.v === 'open' ? 'open' : 'all';
@@ -3807,6 +3857,7 @@ async function boot() {
     st.cart.items = cart.items.map((i) => ({ id: str(i && i.id, 40), name: str(i && i.name, 80), cat: str(i && i.cat, 40), price: Math.max(0, Math.round(num(i && i.price))), qty: Math.max(0, Math.round(num(i && i.qty))), note: str(i && i.note, 120) })).filter((i) => i.id && i.name && i.qty > 0);
     st.cart.type = cart.type === 'take' ? 'take' : 'dine';
     st.cart.boxes = Math.max(0, Math.min(99, Math.round(num(cart.boxes, 1))));
+    st.cart.editId = str(cart.editId, 60);
     st.cart.table = str(cart.table, 60);
     st.cart.note = str(cart.note, 200);
     if (cart.disc && typeof cart.disc === 'object') st.cart.disc = { mode: cart.disc.mode === 'pct' ? 'pct' : 'amt', val: Math.max(0, num(cart.disc.val)) };
