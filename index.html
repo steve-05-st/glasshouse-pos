@@ -1079,6 +1079,16 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
       { name: 'Item Sales', rows: sRows, o: { freezeRow: true, rowHeights: { 0: 30 }, widths: [28, 16, 11, 17, 15] } },
     ];
 
+    return pack(sheets);
+  }
+
+  function menuWorkbook(menu) {
+    const rows = [['Category', 'Item', 'Price (MMK)', 'Sold out'].map(head)];
+    menu.forEach((i) => rows.push([i.cat || '', i.name, { v: i.price || 0, s: S.NUM }, i.out ? 'Yes' : '']));
+    return pack([{ name: 'Menu', rows, o: { selected: true, freezeRow: true, rowHeights: { 0: 30 }, widths: [26, 34, 16, 10], filter: `A1:D${menu.length + 1}` } }]);
+  }
+
+  function pack(sheets) {
     const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
     const RNS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
     const files = [];
@@ -1123,7 +1133,7 @@ details.tv summary { cursor: pointer; color: var(--accent); font-weight: 600; fo
     return zip(files);
   }
 
-  const api = { buildWorkbook, zip, crc32, daySerial, colName };
+  const api = { buildWorkbook, menuWorkbook, zip, crc32, daySerial, colName };
   root.XlsxLite = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
@@ -2981,7 +2991,7 @@ function renderReport() {
 /* ---------- menu ---------- */
 function renderMenu() {
   $('#p-menu').innerHTML = `
-    <div class="page-head"><h2>Menu</h2><div class="actions"><button class="btn primary" data-act="menuAdd">${ico('plus')} Add item</button><button class="btn" data-act="menuImport">Paste / import</button></div></div>
+    <div class="page-head"><h2>Menu</h2><div class="actions"><button class="btn primary" data-act="menuAdd">${ico('plus')} Add item</button><button class="btn" data-act="menuImport">Paste / import</button><button class="btn" data-act="menuExport">${ico('down')} Export menu</button></div></div>
     ${st.menuUpd === 0 ? `<div class="notice info"><span><b>Sample menu in use.</b> Use Paste / import to replace it with your own, or edit the items one by one.</span></div>` : ''}
     <div class="search">${ico('search')}<input class="in" id="menuQ" type="search" data-in="menuQ" placeholder="Search menu items" value="${esc(st.ui.menuQ)}" autocomplete="off" aria-label="Search menu items"></div>
     <div id="menuList" style="display:flex;flex-direction:column;gap:12px"></div>`;
@@ -3538,6 +3548,19 @@ const ACT = {
     if (!editOrder(t.dataset.id)) return toast('Finish or clear the order on the Sell screen first', 'bad');
     go('sell');
     openCart();
+  },
+  menuExport: async () => {
+    if (!st.menu.length) return toast('The menu is empty', 'bad');
+    let bytes;
+    try {
+      bytes = await XlsxLite.menuWorkbook(st.menu);
+    } catch (e) {
+      return toast('Could not build the file: ' + (e && e.message ? e.message : e), 'bad');
+    }
+    const r = await saveFile('glasshouse-menu_' + dayKey() + '.xlsx', bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    if (r === 'saved' || r === 'started') toast('Menu saved: ' + st.menu.length + ' items');
+    else if (r === 'declined') toast('Download cancelled');
+    else toast('This page could not save the file. Open it in a normal browser tab and try again.', 'bad');
   },
   ordFilter: (t) => {
     st.ui.ordFilter = t.dataset.v === 'open' ? 'open' : 'all';
